@@ -174,7 +174,8 @@ def render_video_func(source_path, model_path, iteration, views, gaussians, pipe
 
     final_video.release()
 
-def render_set(model_path, name, iteration, views, gaussians, pipeline, background, classifier, deform, segment_ids):
+@torch.no_grad()
+def render_set(model_path, name, iteration, views, gaussians, pipeline, background, classifier, deform, segment_ids, load2gpu_on_the_fly):
     render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
     gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
     colormask_path = os.path.join(model_path, name, "ours_{}".format(iteration), "objects_feature16")
@@ -204,6 +205,8 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
     renders_list = []
     
     for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
+        if load2gpu_on_the_fly:
+            view.load2device()
         fid = view.fid
         xyz = gaussians.get_xyz
         time_input = fid.unsqueeze(0).expand(xyz.shape[0], -1)
@@ -265,6 +268,8 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
             buffer_image[:, segmented_mask] = 1.0
             # pred_masks_images.append(to8b(buffer_image).transpose(1,2,0))
             pred_masks_list.append(buffer_image.cpu())
+        if load2gpu_on_the_fly:
+            view.load2device('cpu')
     multithread_write(pred_masks_list, pred_masks_path)
     multithread_write(segment_objects_list, segment_objects_path)
     multithread_write(renders_list, render_path)
@@ -297,10 +302,10 @@ def render_sets(dataset : ModelParams, pipeline : PipelineParams,  render_params
                          gaussians, pipeline, background, classifier, args.fps)
 
         if not render_params.skip_train:
-             render_set(dataset.model_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipeline, background, classifier, deform, segment_ids)
+             render_set(dataset.model_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipeline, background, classifier, deform, segment_ids, dataset.load2gpu_on_the_fly)
 
         if (not render_params.skip_test) and (len(scene.getTestCameras()) > 0):
-             render_set(dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), gaussians, pipeline, background, classifier, deform, segment_ids)
+             render_set(dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), gaussians, pipeline, background, classifier, deform, segment_ids, dataset.load2gpu_on_the_fly)
 
 if __name__ == "__main__":
     # Set up command line argument parser
