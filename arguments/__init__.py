@@ -60,6 +60,10 @@ class ModelParams(ParamGroup):
         self._object_path = "sam_mask"
         self.num_classes = 200
         self.lift = False
+        
+        self.load_image_on_the_fly = False
+        self.load_mask_on_the_fly = False
+        self.load2gpu_on_the_fly = False
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
@@ -99,6 +103,7 @@ class OptimizationParams(ParamGroup):
         self.reg3d_max_points = 300000
         self.reg3d_sample_size = 1000
 
+        
         super().__init__(parser, "Optimization Parameters")
 
 class RenderParams(ParamGroup):

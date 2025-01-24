@@ -19,13 +19,37 @@ from utils.pose_utils import generate_ellipse_path, generate_spiral_path
 from argparse import ArgumentParser
 from arguments import ModelParams, PipelineParams, RenderParams, get_combined_args
 from gaussian_renderer import GaussianModel
+from scene import DeformModel
 import numpy as np
 from PIL import Image
 import colorsys
 import cv2
 from sklearn.decomposition import PCA
 import json
+import concurrent.futures
 
+def multithread_write(image_list, path):
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=None)
+    def write_image(image, count, path):
+        try:
+            torchvision.utils.save_image(image, os.path.join(path, '{0:05d}'.format(count) + ".png"))
+            return count, True
+        except Exception as error1:
+            try:
+                Image.fromarray(image).save(os.path.join(path, '{0:05d}'.format(count) + ".png"))
+            except Exception as error2:
+                print("torchvision.utils.save_image failed:", error1)
+                print(" Image.fromarray(image).save failed:", error2)
+                return count, False
+        
+    tasks = []
+    for index, image in enumerate(image_list):
+        tasks.append(executor.submit(write_image, image, index, path))
+    executor.shutdown()
+    for index, status in enumerate(tasks):
+        if status == False:
+            write_image(image_list[index], index, path)
+            
 def feature_to_rgb(features):
     # Input features shape: (16, H, W)
     
@@ -150,10 +174,12 @@ def render_video_func(source_path, model_path, iteration, views, gaussians, pipe
 
     final_video.release()
 
-def render_set(model_path, name, iteration, views, gaussians, pipeline, background, classifier):
+def render_set(model_path, name, iteration, views, gaussians, pipeline, background, classifier, deform, segment_ids):
     render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
     gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
     colormask_path = os.path.join(model_path, name, "ours_{}".format(iteration), "objects_feature16")
+    segment_objects_path = os.path.join(model_path, name, "ours_{}".format(iteration), "segment_objects")
+    pred_masks_path = os.path.join(model_path, name, "ours_{}".format(iteration), "pred_masks")
     if name == "train":
         gt_colormask_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt_objects_color")
         makedirs(gt_colormask_path, exist_ok=True)
@@ -166,9 +192,25 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
     makedirs(colormask_path, exist_ok=True)
     makedirs(pred_obj_path, exist_ok=True)
     makedirs(test_obj_path, exist_ok=True)
-
+    
+    makedirs(segment_objects_path, exist_ok=True)
+    makedirs(pred_masks_path, exist_ok=True)
+    segment_objects_list = []
+    pred_masks_list = []
+    test_obj_list = []
+    pred_obj_list = []
+    colormask_list = []
+    gts_list = []
+    renders_list = []
+    
     for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
-        results = render(view, gaussians, pipeline, background)
+        fid = view.fid
+        xyz = gaussians.get_xyz
+        time_input = fid.unsqueeze(0).expand(xyz.shape[0], -1)
+        d_xyz, d_rotation, d_scaling = deform.step(xyz.detach(), time_input)
+        
+        results = render(view, gaussians, pipeline, background, d_xyz=d_xyz, d_rotation=d_rotation, d_scaling=d_scaling)
+        
         rendering = results["render"]
         rendering_obj = results["render_seg"]
         
@@ -182,28 +224,61 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
 
         rgb_mask = feature_to_rgb(rendering_obj)
         # Image.fromarray(rgb_mask).save(os.path.join(colormask_path, '{0:05d}'.format(idx) + ".png"))
-        Image.fromarray(rgb_mask).save(os.path.join(colormask_path, '{}'.format(view.image_name) + ".png"))
+        # Image.fromarray(rgb_mask).save(os.path.join(colormask_path, '{}'.format(view.image_name) + ".png"))
+        colormask_list.append(rgb_mask)
         if name == "train":
             Image.fromarray(gt_objects.cpu().numpy().astype(np.uint8)).save(os.path.join(gt_object_path, '{}'.format(view.image_name) + ".png"))
             # Image.fromarray(gt_rgb_mask).save(os.path.join(gt_colormask_path, '{0:05d}'.format(idx) + ".png"))
             Image.fromarray(gt_rgb_mask).save(os.path.join(gt_colormask_path, '{}'.format(view.image_name) + ".png"))
         # Image.fromarray(pred_obj_mask).save(os.path.join(pred_obj_path, '{0:05d}'.format(idx) + ".png"))
-        Image.fromarray(pred_obj_mask).save(os.path.join(pred_obj_path, '{}'.format(view.image_name) + ".png"))
+        # Image.fromarray(pred_obj_mask).save(os.path.join(pred_obj_path, '{}'.format(view.image_name) + ".png"))
+        pred_obj_list.append(pred_obj_mask)
         # Save pred_obj for test
         # Image.fromarray(pred_obj.cpu().numpy().astype(np.uint8)).save(os.path.join(test_obj_path, '{0:05d}'.format(idx) + ".png"))
-        Image.fromarray(pred_obj.cpu().numpy().astype(np.uint8)).save(os.path.join(test_obj_path, '{}'.format(view.image_name) + ".png"))
+        # Image.fromarray(pred_obj.cpu().numpy().astype(np.uint8)).save(os.path.join(test_obj_path, '{}'.format(view.image_name) + ".png"))
+        test_obj_list.append(pred_obj)
         # Save pred_obj for test
         gt = view.original_image[0:3, :, :]
         # torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
-        torchvision.utils.save_image(rendering, os.path.join(render_path, '{}'.format(view.image_name) + ".png"))
+        # torchvision.utils.save_image(rendering, os.path.join(render_path, '{}'.format(view.image_name) + ".png"))
         # torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
-        torchvision.utils.save_image(gt, os.path.join(gts_path, '{}'.format(view.image_name) + ".png"))
-
-def render_sets(dataset : ModelParams, pipeline : PipelineParams,  render_params : RenderParams):
+        # torchvision.utils.save_image(gt, os.path.join(gts_path, '{}'.format(view.image_name) + ".png"))
+        renders_list.append(rendering.cpu())
+        gts_list.append(gt.cpu())
+        
+        segmented_mask = None 
+        if segment_ids != -1:
+            for id in segment_ids:
+                if segmented_mask is None:
+                    segmented_mask = (pred_obj == id)
+                else:
+                    segmented_mask |= (pred_obj == id)
+                    
+            buffer_image = rendering
+            buffer_image[:, ~segmented_mask] = 0.0
+            # segment_objects_images.append(to8b(buffer_image).transpose(1,2,0))
+            segment_objects_list.append(buffer_image.cpu())
+            # torchvision.utils.save_image(buffer_image.cpu(), os.path.join(segment_objects_path, '{}'.format(view.image_name) + ".png"))
+            
+            buffer_image = rendering
+            buffer_image[:, ~segmented_mask] = 0.0
+            buffer_image[:, segmented_mask] = 1.0
+            # pred_masks_images.append(to8b(buffer_image).transpose(1,2,0))
+            pred_masks_list.append(buffer_image.cpu())
+    multithread_write(pred_masks_list, pred_masks_path)
+    multithread_write(segment_objects_list, segment_objects_path)
+    multithread_write(renders_list, render_path)
+    multithread_write(gts_list, gts_path)
+    multithread_write(colormask_list, colormask_path)
+    multithread_write(pred_masks_list, pred_obj_path)
+    multithread_write(pred_obj_list, test_obj_path)
+            
+def render_sets(dataset : ModelParams, pipeline : PipelineParams,  render_params : RenderParams, segment_ids):
     with torch.no_grad():
         gaussians = GaussianModel(dataset.sh_degree)
         scene = Scene(dataset, gaussians, load_iteration=render_params.iteration, shuffle=False)
-        
+        deform = DeformModel()
+        deform.load_weights(dataset.model_path, iteration=render_params.iteration)
         # Get the number of classes
         matched_mask_path = os.path.join(dataset.source_path, dataset.object_path)
         info = json.load(open(os.path.join(matched_mask_path, "info.json")))
@@ -222,10 +297,10 @@ def render_sets(dataset : ModelParams, pipeline : PipelineParams,  render_params
                          gaussians, pipeline, background, classifier, args.fps)
 
         if not render_params.skip_train:
-             render_set(dataset.model_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipeline, background, classifier)
+             render_set(dataset.model_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipeline, background, classifier, deform, segment_ids)
 
         if (not render_params.skip_test) and (len(scene.getTestCameras()) > 0):
-             render_set(dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), gaussians, pipeline, background, classifier)
+             render_set(dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), gaussians, pipeline, background, classifier, deform, segment_ids)
 
 if __name__ == "__main__":
     # Set up command line argument parser
@@ -234,6 +309,8 @@ if __name__ == "__main__":
     pipeline = PipelineParams(parser)
     render_params = RenderParams(parser)
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument('--segment_ids', type=int, nargs='+', default=-1)
+    
     args = get_combined_args(parser)
     print("Rendering " + args.model_path)
 
@@ -243,4 +320,4 @@ if __name__ == "__main__":
     # Initialize system state (RNG)
     safe_state(args.quiet)
 
-    render_sets(model.extract(args), pipeline.extract(args), render_params.extract(args))
+    render_sets(model.extract(args), pipeline.extract(args), render_params.extract(args), args.segment_ids)

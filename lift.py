@@ -13,7 +13,7 @@ from random import randint
 from utils.loss_utils import l1_loss, loss_cls_3d
 from gaussian_renderer import render, network_gui
 import sys
-from scene import Scene, GaussianModel
+from scene import Scene, GaussianModel, DeformModel
 from utils.general_utils import safe_state
 import uuid
 from tqdm import tqdm
@@ -22,12 +22,16 @@ from arguments import ModelParams, PipelineParams, OptimizationParams
 import wandb
 import json
 
-def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, use_wandb):
-    first_iter = 0
+def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, use_wandb, load_iteration):
+    first_iter = load_iteration
     prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
-    scene = Scene(dataset, gaussians, load_iteration=-1, shuffle=True)
+    scene = Scene(dataset, gaussians, load_iteration=load_iteration, shuffle=True)
     gaussians.training_seg_only_setup(opt)
+    
+    deform = DeformModel()
+    deform.load_weights(dataset.model_path, iteration=load_iteration)
+    
     # Get the number of classes
     matched_mask_path = os.path.join(dataset.source_path, dataset.object_path)
     info = json.load(open(os.path.join(matched_mask_path, "info.json")))
@@ -76,7 +80,16 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # Render
         if (iteration - 1) == debug_from:
             pipe.debug = True
-        render_pkg = render(viewpoint_cam, gaussians, pipe, background)
+        
+        fid = viewpoint_cam.fid
+        
+        N = gaussians.get_xyz.shape[0]
+        
+        time_input = fid.unsqueeze(0).expand(N, -1)
+        
+        d_xyz, d_rotation, d_scaling = deform.step(gaussians.get_xyz.detach(), time_input)
+        
+        render_pkg = render(viewpoint_cam, gaussians, pipe, background, d_xyz=d_xyz, d_rotation=d_rotation, d_scaling=d_scaling)
         image, viewspace_point_tensor, visibility_filter, radii, objects = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"], render_pkg["render_seg"]
 
         # Object Loss
@@ -129,7 +142,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
                 torch.save(classifier.state_dict(), os.path.join(scene.model_path, "point_cloud/iteration_{}".format(iteration),'classifier.pth'))
-
+                scene.save(iteration)
+                deform.save_weights(args.model_path, iteration)
             # Optimizer step
             try:
                 if iteration < opt.iterations:
@@ -190,6 +204,9 @@ if __name__ == "__main__":
     parser.add_argument("--use_wandb", action='store_true', default=False, help="Use wandb to record loss value")
     parser.add_argument("--my_debug_tag", action='store_true', default=False, help="Debug tag for my own purpose")
 
+    parser.add_argument('--load_iteration', type=int, default=-1)
+    
+    
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
 
@@ -229,7 +246,7 @@ if __name__ == "__main__":
     # Start GUI server, configure and run training
     # network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args.use_wandb)
+    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args.use_wandb, args.load_iteration)
 
     # All done
     print("\nTraining complete.")

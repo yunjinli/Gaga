@@ -10,7 +10,7 @@ from PIL import Image
 from arguments import ModelParams, PipelineParams
 from mask.utils import get_n_different_colors, ndc2Pixel, transformPoint4x4, convert_matched_mask, mask_id_to_binary_mask
 
-from scene import Scene, GaussianModel
+from scene import Scene, GaussianModel, DeformModel
 
 default_params = {
     "seg_method": "sam",
@@ -33,6 +33,10 @@ class GaussianProjector(torch.nn.Module):
         # Load pre-trained Gaussians and cameras
         self.gaussians = GaussianModel(dataset.sh_degree)
         scene = Scene(dataset, self.gaussians, load_iteration=iteration, shuffle=False)
+        
+        self.deform = DeformModel()
+        self.deform.load_weights(dataset.model_path, iteration=iteration)
+        
         self.gaussians_xyz = self.gaussians.get_xyz.to(self.device)
         self.viewpoint_camera = scene.getTrainCameras() # Only use the training cameras for mask association
         # Key hyperparameters
@@ -170,8 +174,18 @@ class GaussianProjector(torch.nn.Module):
 
     def project_gaussian(self, viewpoint):
         proj_matrix = viewpoint.full_proj_transform
+        
+        ## For deformation
+        fid = viewpoint.fid
+        N = self.gaussians_xyz.shape[0]
+        time_input = fid.unsqueeze(0).expand(N, -1)
 
-        p_hom = transformPoint4x4(self.gaussians_xyz, proj_matrix)
+        d_xyz, d_rotation, d_scaling = self.deform.step(self.gaussians_xyz.detach(), time_input)
+        
+        gaussians_xyz_now = self.gaussians_xyz + d_xyz
+
+        
+        p_hom = transformPoint4x4(gaussians_xyz_now, proj_matrix)
         p_hom_z = p_hom[:, 2]
 
         p_w = 1 / (p_hom[:, 3:] + 1e-8)

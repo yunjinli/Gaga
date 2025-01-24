@@ -17,7 +17,12 @@ from utils.graphics_utils import getWorld2View2, getProjectionMatrix
 class Camera(nn.Module):
     def __init__(self, colmap_id, R, T, FoVx, FoVy, image, gt_alpha_mask,
                  image_name, uid,
-                 trans=np.array([0.0, 0.0, 0.0]), scale=1.0, data_device = "cuda", objects=None
+                 image_path,
+                 image_height,
+                 image_width,
+                 trans=np.array([0.0, 0.0, 0.0]), scale=1.0, data_device = "cuda", 
+                 objects=None,
+                 fid=None, 
                  ):
         super(Camera, self).__init__()
 
@@ -28,18 +33,31 @@ class Camera(nn.Module):
         self.FoVx = FoVx
         self.FoVy = FoVy
         self.image_name = image_name
+        if image_path:
+            self.image_path = image_path
 
         try:
             self.data_device = torch.device(data_device)
+            
         except Exception as e:
             print(e)
             print(f"[Warning] Custom device {data_device} failed, fallback to default cuda device" )
             self.data_device = torch.device("cuda")
 
-        self.original_image = image.clamp(0.0, 1.0).to(self.data_device)
-        self.image_width = self.original_image.shape[2]
-        self.image_height = self.original_image.shape[1]
-
+        # self.original_image = image.clamp(0.0, 1.0).to(self.data_device)
+        # self.image_width = self.original_image.shape[2]
+        # self.image_height = self.original_image.shape[1]
+        if image is not None:
+            self.original_image = image.clamp(0.0, 1.0).to(self.data_device)
+            self.image_width = self.original_image.shape[2]
+            self.image_height = self.original_image.shape[1]
+        else:
+            self.original_image = image
+            self.image_height = image_height
+            self.image_width = image_width
+            
+        self.fid = torch.Tensor(np.array([fid])).to(self.data_device)
+        
         if gt_alpha_mask is not None:
             self.original_image *= gt_alpha_mask.to(self.data_device)
         else:
@@ -60,7 +78,19 @@ class Camera(nn.Module):
             self.objects = objects.to(self.data_device)
         else:
             self.objects = None
+            
+    def load2device(self, data_device='cuda'):
+        if self.original_image is not None:
+            self.original_image = self.original_image.to(data_device)
+        self.world_view_transform = self.world_view_transform.to(data_device)
+        self.projection_matrix = self.projection_matrix.to(data_device)
+        self.full_proj_transform = self.full_proj_transform.to(data_device)
+        self.camera_center = self.camera_center.to(data_device)
+        self.fid = self.fid.to(data_device)
 
+        if self.objects is not None:
+            # if torch.is_tensor(self.masks):
+            self.objects = self.objects.to(data_device)
 
 class MiniCam:
     def __init__(self, width, height, fovy, fovx, znear, zfar, world_view_transform, full_proj_transform):

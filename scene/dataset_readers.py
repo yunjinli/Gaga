@@ -18,6 +18,7 @@ import json
 from pathlib import Path
 from plyfile import PlyData, PlyElement
 from utils.sh_utils import SH2RGB
+from utils.camera_utils import camera_nerfies_from_JSON
 from scene.gaussian_model import BasicPointCloud
 
 class CameraInfo(NamedTuple):
@@ -32,7 +33,8 @@ class CameraInfo(NamedTuple):
     width: int
     height: int
     objects: np.array
-
+    fid: float
+    
 class SceneInfo(NamedTuple):
     point_cloud: BasicPointCloud
     train_cameras: list
@@ -40,7 +42,7 @@ class SceneInfo(NamedTuple):
     nerf_normalization: dict
     ply_path: str
 
-def getNerfppNorm(cam_info):
+def getNerfppNorm(cam_info, apply):
     def get_center_and_diag(cam_centers):
         cam_centers = np.hstack(cam_centers)
         avg_cam_center = np.mean(cam_centers, axis=1, keepdims=True)
@@ -342,7 +344,188 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png"):
                            ply_path=ply_path)
     return scene_info
 
+def readNerfiesCameras(path, load_image_on_the_fly=False):
+    with open(f'{path}/scene.json', 'r') as f:
+        scene_json = json.load(f)
+    with open(f'{path}/metadata.json', 'r') as f:
+        meta_json = json.load(f)
+    with open(f'{path}/dataset.json', 'r') as f:
+        dataset_json = json.load(f)
+
+    coord_scale = scene_json['scale']
+    scene_center = scene_json['center']
+
+    name = path.split('/')[-2]
+    if name.startswith('vrig'):
+        print("vrig dataset")
+        train_img = dataset_json['train_ids']
+        val_img = dataset_json['val_ids']
+        all_img = train_img + val_img
+        ratio = 0.25
+    elif name.startswith('NeRF'):
+        print("It's NeRF-DS dataset")
+        train_img = dataset_json['train_ids']
+        val_img = dataset_json['val_ids']
+        all_img = train_img + val_img
+        ratio = 0.5
+    elif name.startswith('interp'):
+        all_id = dataset_json['ids']
+        train_img = all_id[::4]
+        val_img = all_id[2::4]
+        all_img = train_img + val_img
+        ratio = 0.5
+    else:  # for hypernerf
+        print("It's HyperNeRF misc dataset")
+        all_id = dataset_json['ids']
+        train_img = all_id[::4]
+        val_img = all_id[2::4]
+        all_img = train_img + val_img
+        ratio = 0.5
+
+    train_num = len(train_img)
+
+    all_cam = [meta_json[i]['camera_id'] for i in all_img]
+    all_time = [meta_json[i]['time_id'] for i in all_img]
+    max_time = max(all_time)
+    all_time = [meta_json[i]['time_id'] / max_time for i in all_img]
+    selected_time = set(all_time)
+
+    # all poses
+    all_cam_params = []
+    for im in all_img:
+        camera = camera_nerfies_from_JSON(f'{path}/camera/{im}.json', ratio)
+        camera['position'] = camera['position'] - scene_center
+        camera['position'] = camera['position'] * coord_scale
+        all_cam_params.append(camera)
+
+    all_img = [f'{path}/rgb/{int(1 / ratio)}x/{i}.png' for i in all_img]
+
+    cam_infos = []
+        
+    for idx in range(len(all_img)):
+        image_path = all_img[idx]
+        image_name = Path(image_path).stem
+        
+        image = np.array(Image.open(image_path))
+        image = Image.fromarray((image).astype(np.uint8))
+        
+        width = image.size[0]
+        height = image.size[1]
+        
+        # masks_path = os.path.join(path, 'masks', image_name + '.pt')
+        
+        # if not load_mask_on_the_fly:
+        #     masks = torch.load(masks_path) if os.path.exists(masks_path) else None
+        #     if torch.is_tensor(masks):
+        #         masks = masks.to('cpu')
+        # else:
+        #     masks = None 
+        object_path = os.path.join(path, 'sam_mask', image_name + '.png')
+        # print(object_path)
+        objects = Image.open(object_path) if os.path.exists(object_path) else None
+        objects = np.array(objects) if objects is not None else None
+
+        if load_image_on_the_fly:
+            image = None
+            
+        orientation = all_cam_params[idx]['orientation'].T
+        position = -all_cam_params[idx]['position'] @ orientation
+        focal = all_cam_params[idx]['focal_length']
+        fid = all_time[idx]
+        T = position
+        R = orientation
+
+        FovY = focal2fov(focal, height)
+        FovX = focal2fov(focal, width)
+        
+        cam_info = CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
+                              image_path=image_path, image_name=image_name, width=width, height=height,
+                              fid=fid, objects=objects)
+        cam_infos.append(cam_info)
+
+    sys.stdout.write('\n')
+    return cam_infos, train_num, scene_center, coord_scale
+
+def readNerfiesInfo(path, eval, load_image_on_the_fly=False):
+    print("Reading Nerfies Info")
+    # cam_infos, train_num, scene_center, scene_scale = readNerfiesCameras(path, objects_folder=None)
+    if os.path.exists(os.path.join(path, 'colmap')):
+        cam_infos, train_num, scene_center, scene_center = readNerfiesColmapCameras(path)
+        recenter_by_pcl = apply_cam_norm = True
+    else:
+        cam_infos, train_num, scene_center, scene_scale = readNerfiesCameras(path, load_image_on_the_fly=load_image_on_the_fly)
+        recenter_by_pcl = apply_cam_norm = False
+        
+    if eval:
+        train_cam_infos = cam_infos[:train_num]
+        test_cam_infos = cam_infos[train_num:]
+    else:
+        train_cam_infos = cam_infos
+        test_cam_infos = []
+
+    # nerf_normalization = getNerfppNorm(train_cam_infos)
+    nerf_normalization = getNerfppNorm(train_cam_infos, apply=apply_cam_norm)
+    
+    if os.path.exists(os.path.join(path, 'colmap')):
+        print('Using COLMAP for Nerfies!')
+        sparse_name = "sparse" if os.path.exists(os.path.join(path, 'colmap', "sparse")) else "colmap_sparse"
+        if recenter_by_pcl:
+            ply_path = os.path.join(path, f"colmap/{sparse_name}/0/points3d_recentered.ply")
+        elif apply_cam_norm:
+            ply_path = os.path.join(path, f"colmap/{sparse_name}/0/points3d_normalized.ply")
+        else:
+            ply_path = os.path.join(path, f"colmap/{sparse_name}/0/points3d.ply")
+        bin_path = os.path.join(path, f"colmap/{sparse_name}/0/points3D.bin")
+        txt_path = os.path.join(path, f"colmap/{sparse_name}/0/points3D.txt")
+        adj_path = os.path.join(path, f"colmap/{sparse_name}/0/camera_adjustment")
+        if not os.path.exists(ply_path):
+            print("Converting point3d.bin to .ply, will happen only the first time you open the scene.")
+            try:
+                xyz, rgb, _ = read_points3D_binary(bin_path)
+            except:
+                xyz, rgb, _ = read_points3D_text(txt_path)
+            if apply_cam_norm:
+                xyz += nerf_normalization["apply_translate"]
+                xyz /= nerf_normalization["apply_radius"]
+            if recenter_by_pcl:
+                pcl_center = xyz.mean(axis=0)
+                translate_cam_info(train_cam_infos, - pcl_center)
+                translate_cam_info(test_cam_infos, - pcl_center)
+                xyz -= pcl_center
+                np.savez(adj_path, translate=-pcl_center)
+            storePly(ply_path, xyz, rgb)
+        else:
+            translate = np.load(adj_path + '.npz')['translate']
+            translate_cam_info(train_cam_infos, translate=translate)
+            translate_cam_info(test_cam_infos, translate=translate)
+    else:
+        ply_path = os.path.join(path, "points3d.ply")
+        if not os.path.exists(ply_path):
+            print(f"Generating point cloud from nerfies...")
+
+            xyz = np.load(os.path.join(path, "points.npy"))
+            xyz = (xyz - scene_center) * scene_scale
+            num_pts = xyz.shape[0]
+            shs = np.random.random((num_pts, 3)) / 255.0
+            pcd = BasicPointCloud(points=xyz, colors=SH2RGB(
+                shs), normals=np.zeros((num_pts, 3)))
+
+            storePly(ply_path, xyz, SH2RGB(shs) * 255)
+    try:
+        pcd = fetchPly(ply_path)
+    except:
+        pcd = None
+
+    scene_info = SceneInfo(point_cloud=pcd,
+                           train_cameras=train_cam_infos,
+                           test_cameras=test_cam_infos,
+                           nerf_normalization=nerf_normalization,
+                           ply_path=ply_path)
+    return scene_info
+
 sceneLoadTypeCallbacks = {
     "Colmap": readColmapSceneInfo,
-    "Blender" : readNerfSyntheticInfo
+    "Blender" : readNerfSyntheticInfo,
+    "nerfies": readNerfiesInfo,  # NeRF-DS & HyperNeRF dataset proposed by [https://github.com/google/hypernerf/releases/tag/v0.1]
+    
 }
