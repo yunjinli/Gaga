@@ -102,7 +102,10 @@ def get_sam_mask(auto_sam, image, confidence_threshold):
     selected_scores, ranks = torch.sort(selected_scores)
     ranks = ranks + 1
     for index in ranks:
-        mask_id[(selected_masks[index-1]==1).cpu().numpy()] = int(index)
+        if index < 256:
+            mask_id[(selected_masks[index-1]==1).cpu().numpy()] = int(index)
+        else:
+            print("[WARNING] Number of mask > 256")
 
     # Compress the masks
     mask_indices = np.unique(mask_id)
@@ -175,7 +178,7 @@ if __name__ == "__main__":
     # locate image folder
     image_folder = os.path.join(args.dataset_folder, args.scene, args.image)
     assert os.path.exists(image_folder)
-
+    print(image_folder)
     # load config
     config = json.load(open(os.path.join(os.path.dirname(__file__), 'config.json'), 'r'))[args.seg_method]
 
