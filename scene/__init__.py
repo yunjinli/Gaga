@@ -46,9 +46,17 @@ class Scene:
 
         if os.path.exists(os.path.join(args.source_path, "sparse")):
             scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.eval, args.object_path, n_views=args.n_views, random_init=args.random_init, train_split=args.train_split)
+        # elif os.path.exists(os.path.join(args.source_path, "transforms_train.json")):
+        #     print("Found transforms_train.json file, assuming Blender data set!")
+        #     scene_info = sceneLoadTypeCallbacks["Blender"](args.source_path, args.white_background, args.eval)
         elif os.path.exists(os.path.join(args.source_path, "transforms_train.json")):
-            print("Found transforms_train.json file, assuming Blender data set!")
-            scene_info = sceneLoadTypeCallbacks["Blender"](args.source_path, args.white_background, args.eval)
+            print("Found transforms_train.json file, assuming Multi-View data set!")
+            scene_info = sceneLoadTypeCallbacks["Blender"](path=args.source_path, 
+                                                           white_background=args.white_background, 
+                                                           eval=args.eval, 
+                                                           load_image_on_the_fly=args.load_image_on_the_fly, 
+                                                           load_mask_on_the_fly=args.load_mask_on_the_fly, 
+                                                           )
         elif os.path.exists(os.path.join(args.source_path, "dataset.json")):
             print("Found dataset.json file, assuming Nerfies data set!")
             scene_info = sceneLoadTypeCallbacks["nerfies"](path=args.source_path, 

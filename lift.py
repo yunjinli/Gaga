@@ -21,6 +21,8 @@ from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
 import wandb
 import json
+from PIL import Image
+import numpy as np
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, use_wandb, load_iteration):
     first_iter = load_iteration
@@ -93,7 +95,15 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         image, viewspace_point_tensor, visibility_filter, radii, objects = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"], render_pkg["render_seg"]
 
         # Object Loss
-        gt_obj = viewpoint_cam.objects.cuda().long()
+        # gt_obj = viewpoint_cam.objects.cuda().long()
+        
+        if dataset.load_mask_on_the_fly:
+            gt_obj = Image.open(viewpoint_cam.object_path)
+            gt_obj = np.array(gt_obj)
+            gt_obj = torch.from_numpy(np.array(gt_obj, dtype=np.float32)).cuda().long()
+        else:
+            gt_obj = viewpoint_cam.objects.cuda().long()
+            
         logits = classifier(objects)
 
         loss_obj = cls_criterion(logits.unsqueeze(0), gt_obj.unsqueeze(0)).squeeze().mean()

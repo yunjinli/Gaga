@@ -49,6 +49,7 @@ class GaussianProjector(torch.nn.Module):
         self.raw_mask_folder = os.path.join(self.source_path, "raw_{0}_mask".format(self.seg_method))
         assert os.path.exists(self.raw_mask_folder), "Mask folder does not exist."
         self.associated_mask_folder = os.path.join(self.source_path, "{0}_mask".format(self.seg_method))
+        print(self.associated_mask_folder)
         os.makedirs(self.associated_mask_folder, exist_ok=True)
         if params["visualize"]:
             self.visualize = True

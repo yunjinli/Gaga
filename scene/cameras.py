@@ -23,6 +23,7 @@ class Camera(nn.Module):
                  trans=np.array([0.0, 0.0, 0.0]), scale=1.0, data_device = "cuda", 
                  objects=None,
                  fid=None, 
+                 object_path=None
                  ):
         super(Camera, self).__init__()
 
@@ -58,10 +59,10 @@ class Camera(nn.Module):
             
         self.fid = torch.Tensor(np.array([fid])).to(self.data_device)
         
-        if gt_alpha_mask is not None:
-            self.original_image *= gt_alpha_mask.to(self.data_device)
-        else:
-            self.original_image *= torch.ones((1, self.image_height, self.image_width), device=self.data_device)
+        # if gt_alpha_mask is not None:
+        #     self.original_image *= gt_alpha_mask.to(self.data_device)
+        # else:
+        #     self.original_image *= torch.ones((1, self.image_height, self.image_width), device=self.data_device)
 
         self.zfar = 100.0
         self.znear = 0.01
@@ -77,6 +78,7 @@ class Camera(nn.Module):
         if objects is not None:
             self.objects = objects.to(self.data_device)
         else:
+            self.object_path = object_path
             self.objects = None
             
     def load2device(self, data_device='cuda'):

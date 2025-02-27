@@ -20,6 +20,8 @@ from plyfile import PlyData, PlyElement
 from utils.sh_utils import SH2RGB
 from utils.camera_utils import camera_nerfies_from_JSON
 from scene.gaussian_model import BasicPointCloud
+from tqdm import tqdm
+from multiprocessing.pool import ThreadPool
 
 class CameraInfo(NamedTuple):
     uid: int
@@ -34,6 +36,7 @@ class CameraInfo(NamedTuple):
     height: int
     objects: np.array
     fid: float
+    object_path: str
     
 class SceneInfo(NamedTuple):
     point_cloud: BasicPointCloud
@@ -42,7 +45,7 @@ class SceneInfo(NamedTuple):
     nerf_normalization: dict
     ply_path: str
 
-def getNerfppNorm(cam_info, apply):
+def getNerfppNorm(cam_info, apply=False):
     def get_center_and_diag(cam_centers):
         cam_centers = np.hstack(cam_centers)
         avg_cam_center = np.mean(cam_centers, axis=1, keepdims=True)
@@ -266,47 +269,47 @@ def readColmapSceneInfo(path, images, eval, object_path, llffhold=8, n_views=100
                            ply_path=ply_path)
     return scene_info
 
-def readCamerasFromTransforms(path, transformsfile, white_background, extension=".png"):
-    cam_infos = []
+# def readCamerasFromTransforms(path, transformsfile, white_background, extension=".png"):
+#     cam_infos = []
 
-    with open(os.path.join(path, transformsfile)) as json_file:
-        contents = json.load(json_file)
-        fovx = contents["camera_angle_x"]
+#     with open(os.path.join(path, transformsfile)) as json_file:
+#         contents = json.load(json_file)
+#         fovx = contents["camera_angle_x"]
 
-        frames = contents["frames"]
-        for idx, frame in enumerate(frames):
-            cam_name = os.path.join(path, frame["file_path"] + extension)
+#         frames = contents["frames"]
+#         for idx, frame in enumerate(frames):
+#             cam_name = os.path.join(path, frame["file_path"] + extension)
 
-            # NeRF 'transform_matrix' is a camera-to-world transform
-            c2w = np.array(frame["transform_matrix"])
-            # change from OpenGL/Blender camera axes (Y up, Z back) to COLMAP (Y down, Z forward)
-            c2w[:3, 1:3] *= -1
+#             # NeRF 'transform_matrix' is a camera-to-world transform
+#             c2w = np.array(frame["transform_matrix"])
+#             # change from OpenGL/Blender camera axes (Y up, Z back) to COLMAP (Y down, Z forward)
+#             c2w[:3, 1:3] *= -1
 
-            # get the world-to-camera transform and set R, T
-            w2c = np.linalg.inv(c2w)
-            R = np.transpose(w2c[:3,:3])  # R is stored transposed due to 'glm' in CUDA code
-            T = w2c[:3, 3]
+#             # get the world-to-camera transform and set R, T
+#             w2c = np.linalg.inv(c2w)
+#             R = np.transpose(w2c[:3,:3])  # R is stored transposed due to 'glm' in CUDA code
+#             T = w2c[:3, 3]
 
-            image_path = os.path.join(path, cam_name)
-            image_name = Path(cam_name).stem
-            image = Image.open(image_path)
+#             image_path = os.path.join(path, cam_name)
+#             image_name = Path(cam_name).stem
+#             image = Image.open(image_path)
 
-            im_data = np.array(image.convert("RGBA"))
+#             im_data = np.array(image.convert("RGBA"))
 
-            bg = np.array([1,1,1]) if white_background else np.array([0, 0, 0])
+#             bg = np.array([1,1,1]) if white_background else np.array([0, 0, 0])
 
-            norm_data = im_data / 255.0
-            arr = norm_data[:,:,:3] * norm_data[:, :, 3:4] + bg * (1 - norm_data[:, :, 3:4])
-            image = Image.fromarray(np.array(arr*255.0, dtype=np.byte), "RGB")
+#             norm_data = im_data / 255.0
+#             arr = norm_data[:,:,:3] * norm_data[:, :, 3:4] + bg * (1 - norm_data[:, :, 3:4])
+#             image = Image.fromarray(np.array(arr*255.0, dtype=np.byte), "RGB")
 
-            fovy = focal2fov(fov2focal(fovx, image.size[0]), image.size[1])
-            FovY = fovy 
-            FovX = fovx
+#             fovy = focal2fov(fov2focal(fovx, image.size[0]), image.size[1])
+#             FovY = fovy 
+#             FovX = fovx
 
-            cam_infos.append(CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
-                            image_path=image_path, image_name=image_name, width=image.size[0], height=image.size[1]))
+#             cam_infos.append(CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
+#                             image_path=image_path, image_name=image_name, width=image.size[0], height=image.size[1]))
             
-    return cam_infos
+#     return cam_infos
 
 def readNerfSyntheticInfo(path, white_background, eval, extension=".png"):
     print("Reading Training Transforms")
@@ -523,9 +526,202 @@ def readNerfiesInfo(path, eval, load_image_on_the_fly=False):
                            ply_path=ply_path)
     return scene_info
 
+def readCamerasFromTransforms(path, transformsfile, white_background, extension=".png", load_image_on_the_fly=False, load_mask_on_the_fly=False):
+    cam_infos = []
+    
+    with open(os.path.join(path, transformsfile)) as json_file:
+        contents = json.load(json_file)
+    if "camera_angle_x" in contents:
+        print("This is Blender dataset")
+        dataset_type = 'blender'
+        fovx = contents["camera_angle_x"]
+        time_duration = None
+    elif 'fl_x' in contents and 'fl_y' in contents and 'cx' in contents and 'cy' in contents:
+        print("This is Neu3D dataset")
+        dataset_type = 'neu3d'
+        time_duration = 10.0
+    elif 'technicolor' in path:
+        print("This is Technicolor dataset")
+        dataset_type = 'technicolor'
+        ## We downsample the dataset during preprocessing already
+        time_duration = 10.0 / 6.0
+    else:
+        print("This is Google Immersive dataset")
+        dataset_type = 'immersive'
+        time_duration = 10.0 / 6.0
+        
+    frames = contents["frames"]
+    tbar = tqdm(range(len(frames)))
+    def frame_read_fn(idx_frame):
+        idx = idx_frame[0]
+        frame = idx_frame[1]
+        
+        fid = int(frame['file_path'].split('/')[-1][-4:])
+        frame_time = frame['time']
+        if time_duration:
+            frame_time /= time_duration
+        
+        cam_name = os.path.join(path, frame["file_path"] + extension)
+
+        if dataset_type == 'immersive' or dataset_type == 'technicolor':
+            w2c = np.array(frame["transform_matrix"])
+        else:
+            # NeRF 'transform_matrix' is a camera-to-world transform
+            c2w = np.array(frame["transform_matrix"])
+            # change from OpenGL/Blender camera axes (Y up, Z back) to COLMAP (Y down, Z forward)
+            c2w[:3, 1:3] *= -1
+            # get the world-to-camera transform and set R, T
+            w2c = np.linalg.inv(c2w)
+            
+        R = np.transpose(w2c[:3,:3])  # R is stored transposed due to 'glm' in CUDA code
+        T = w2c[:3, 3]
+
+        image_path = os.path.join(path, cam_name) # .replace('hdImgs_unditorted', 'hdImgs_unditorted_rgba').replace('.jpg', '.png')
+        image_name = Path(cam_name).stem
+        
+        if not load_image_on_the_fly:
+            with Image.open(image_path) as image_load:
+                im_data = np.array(image_load.convert("RGBA"))
+
+            bg = np.array([1,1,1]) if white_background else np.array([0, 0, 0])
+
+            norm_data = im_data / 255.0
+            arr = norm_data[:,:,:3] * norm_data[:, :, 3:4] + bg * (1 - norm_data[:, :, 3:4])
+            if norm_data[:, :, 3:4].min() < 1:
+                arr = np.concatenate([arr, norm_data[:, :, 3:4]], axis=2)
+                image = Image.fromarray(np.array(arr*255.0, dtype=np.byte), "RGBA")
+            else:
+                image = Image.fromarray(np.array(arr*255.0, dtype=np.byte), "RGB")
+
+            width, height = image.size[0], image.size[1]
+        else:
+            image = None
+            try:
+                width = frame['w']
+                height = frame['h']
+            except:
+                width = contents['w']
+                height = contents['h']
+        
+        tbar.update(1)
+        
+        if dataset_type == 'neu3d':
+            focal_length_x = contents['fl_x']
+            focal_length_y = contents['fl_y']
+            FovY = focal2fov(focal_length_y, height)
+            FovX = focal2fov(focal_length_x, width)
+        
+            
+            object_path = os.path.join(path, 'sam_mask', image_name + '.png')
+            
+
+            if load_mask_on_the_fly:
+                objects = None
+            else:
+                objects = Image.open(object_path) if os.path.exists(object_path) else None
+                objects = np.array(objects) if objects is not None else None
+                
+            # return CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
+            #                 image_path=image_path, image_name=image_name, width=width, height=height, fid=frame_time, masks=masks, mask_path=masks_path)
+            return CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
+                              image_path=image_path, image_name=image_name, width=width, height=height,
+                              fid=frame_time, objects=objects, object_path=object_path)
+        elif dataset_type == 'blender':
+            ## Blender
+            fovy = focal2fov(fov2focal(fovx, width), height)
+            FovY = fovy
+            FovX = fovx
+            
+            masks_path = os.path.join(path, frame["file_path"].split('/')[-2], 'masks', frame["file_path"].split('/')[-1] + '.pt')
+            if load_mask_on_the_fly:
+                masks = None
+            else:
+                masks = torch.load(masks_path) if os.path.exists(masks_path) else None
+                if torch.is_tensor(masks):
+                    masks = masks.to('cpu')
+                
+            return CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
+                            image_path=image_path, image_name=image_name, width=width, height=height, fid=frame_time, masks=masks, mask_path=masks_path)
+            
+        elif dataset_type == 'immersive' or dataset_type == 'technicolor':
+            focal_length_x = frame['fl_x']
+            focal_length_y = frame['fl_y']
+            FovY = focal2fov(focal_length_y, height)
+            FovX = focal2fov(focal_length_x, width)
+            
+            # masks_path = os.path.join(path, 'masks', frame["file_path"].split('/')[-1] + '.pt')
+            object_path = os.path.join(path, 'sam_mask', image_name + '.png')
+            if load_mask_on_the_fly:
+                objects = None
+            else:
+                objects = Image.open(object_path) if os.path.exists(object_path) else None
+                objects = np.array(objects) if objects is not None else None
+            # if load_mask_on_the_fly:
+            #     masks = None
+            # else:
+            #     masks = torch.load(masks_path) if os.path.exists(masks_path) else None
+            #     if torch.is_tensor(masks):
+            #         masks = masks.to('cpu')
+
+            # return CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
+            #                 image_path=image_path, image_name=image_name, width=width, height=height, fid=frame_time, masks=masks, mask_path=masks_path)
+            return CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
+                              image_path=image_path, image_name=image_name, width=width, height=height,
+                              fid=frame_time, objects=objects, object_path=object_path)
+        else:
+            raise NotImplementedError()
+             
+    with ThreadPool() as pool:
+        cam_infos = pool.map(frame_read_fn, zip(list(range(len(frames))), frames))
+        pool.close()
+        pool.join()
+        
+    cam_infos = [cam_info for cam_info in cam_infos if cam_info is not None]
+    
+    print(f"[INFO] {len(cam_infos)} images loaded.")
+
+    return cam_infos
+
+def readMultiViewInfo(path, white_background, eval, extension=".png", load_image_on_the_fly=False, load_mask_on_the_fly=False):
+    print("Reading Training Transforms")
+    train_cam_infos = readCamerasFromTransforms(path, "transforms_train.json", white_background, extension, load_image_on_the_fly, load_mask_on_the_fly)
+    print("Reading Test Transforms")
+    test_cam_infos = readCamerasFromTransforms(path, "transforms_test.json", white_background, extension, load_image_on_the_fly, load_mask_on_the_fly)
+    
+    if not eval:
+        train_cam_infos.extend(test_cam_infos)
+        test_cam_infos = []
+
+    nerf_normalization = getNerfppNorm(train_cam_infos)
+
+    ply_path = os.path.join(path, "points3d.ply")
+    if not os.path.exists(ply_path):
+        # Since this data set has no colmap data, we start with random points
+        num_pts = 100_000
+        print(f"Generating random point cloud ({num_pts})...")
+        
+        # We create random points inside the bounds of the synthetic Blender scenes
+        xyz = np.random.random((num_pts, 3)) * 2.6 - 1.3
+        shs = np.random.random((num_pts, 3)) / 255.0
+        pcd = BasicPointCloud(points=xyz, colors=SH2RGB(shs), normals=np.zeros((num_pts, 3)))
+
+        storePly(ply_path, xyz, SH2RGB(shs) * 255)
+    try:
+        pcd = fetchPly(ply_path)
+    except:
+        pcd = None
+
+    scene_info = SceneInfo(point_cloud=pcd,
+                           train_cameras=train_cam_infos,
+                           test_cameras=test_cam_infos,
+                           nerf_normalization=nerf_normalization,
+                           ply_path=ply_path)
+    return scene_info
+
+
 sceneLoadTypeCallbacks = {
     "Colmap": readColmapSceneInfo,
-    "Blender" : readNerfSyntheticInfo,
+    "Blender" : readMultiViewInfo,
     "nerfies": readNerfiesInfo,  # NeRF-DS & HyperNeRF dataset proposed by [https://github.com/google/hypernerf/releases/tag/v0.1]
     
 }
