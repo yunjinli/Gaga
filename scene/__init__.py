@@ -56,6 +56,7 @@ class Scene:
                                                            eval=args.eval, 
                                                            load_image_on_the_fly=args.load_image_on_the_fly, 
                                                            load_mask_on_the_fly=args.load_mask_on_the_fly, 
+                                                           end_frame=args.end_frame
                                                            )
         elif os.path.exists(os.path.join(args.source_path, "dataset.json")):
             print("Found dataset.json file, assuming Nerfies data set!")

@@ -241,13 +241,13 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
         # Image.fromarray(pred_obj.cpu().numpy().astype(np.uint8)).save(os.path.join(test_obj_path, '{}'.format(view.image_name) + ".png"))
         test_obj_list.append(pred_obj)
         # Save pred_obj for test
-        gt = view.original_image[0:3, :, :]
+        # gt = view.original_image[0:3, :, :]
         # torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
         # torchvision.utils.save_image(rendering, os.path.join(render_path, '{}'.format(view.image_name) + ".png"))
         # torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
         # torchvision.utils.save_image(gt, os.path.join(gts_path, '{}'.format(view.image_name) + ".png"))
         renders_list.append(rendering.cpu())
-        gts_list.append(gt.cpu())
+        # gts_list.append(gt.cpu())
         
         segmented_mask = None 
         if segment_ids != -1:

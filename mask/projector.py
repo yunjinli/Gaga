@@ -55,7 +55,8 @@ class GaussianProjector(torch.nn.Module):
             self.visualize = True
             self.visualize_folder = os.path.join(self.source_path, "{0}_mask_vis".format(self.seg_method))
             os.makedirs(self.visualize_folder, exist_ok=True)
-            self.random_colors = get_n_different_colors(1000)
+            # self.random_colors = get_n_different_colors(1000)
+            self.random_colors = get_n_different_colors(10000)
         
         # For mask partition
         random_mask = self.load_mask(self.viewpoint_camera[0])
@@ -137,22 +138,24 @@ class GaussianProjector(torch.nn.Module):
 
     def build_mask_association(self):
         for view in tqdm(self.viewpoint_camera):
-            view = view.to(self.device)
-            if self.num_mask == 0:
-                labels = self.initialize(view)
-            else:
-                labels = self.associate(view)
-            
-            mask_path = os.path.join(self.raw_mask_folder, view.image_name + ".png")
-            mask = cv2.imread(mask_path, cv2.IMREAD_UNCHANGED)
-            object_mask = convert_matched_mask(labels, mask)
-            object_mask_path = os.path.join(self.associated_mask_folder, view.image_name + ".png")
-            cv2.imwrite(object_mask_path, object_mask)
-            if self.visualize:
-                visualize_mask = self.visualize_mask_association(object_mask)
-                visualize_mask_path = os.path.join(self.visualize_folder, view.image_name + ".png")
-                cv2.imwrite(visualize_mask_path, visualize_mask)
-            # print("Number of masks: ", self.num_mask)
+            try:
+                view = view.to(self.device)
+                if self.num_mask == 0:
+                    labels = self.initialize(view)
+                else:
+                    labels = self.associate(view)
+                
+                mask_path = os.path.join(self.raw_mask_folder, view.image_name + ".png")
+                mask = cv2.imread(mask_path, cv2.IMREAD_UNCHANGED)
+                object_mask = convert_matched_mask(labels, mask)
+                object_mask_path = os.path.join(self.associated_mask_folder, view.image_name + ".png")
+                cv2.imwrite(object_mask_path, object_mask)
+                if self.visualize:
+                    visualize_mask = self.visualize_mask_association(object_mask)
+                    visualize_mask_path = os.path.join(self.visualize_folder, view.image_name + ".png")
+                    cv2.imwrite(visualize_mask_path, visualize_mask)
+            except Exception as e: 
+                print(e)
 
         info = {
             "num_mask": self.get_num_mask,

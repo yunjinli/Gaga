@@ -526,7 +526,7 @@ def readNerfiesInfo(path, eval, load_image_on_the_fly=False):
                            ply_path=ply_path)
     return scene_info
 
-def readCamerasFromTransforms(path, transformsfile, white_background, extension=".png", load_image_on_the_fly=False, load_mask_on_the_fly=False):
+def readCamerasFromTransforms(path, transformsfile, white_background, extension=".png", load_image_on_the_fly=False, load_mask_on_the_fly=False, end_frame=None):
     cam_infos = []
     
     with open(os.path.join(path, transformsfile)) as json_file:
@@ -548,7 +548,8 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
     else:
         print("This is Google Immersive dataset")
         dataset_type = 'immersive'
-        time_duration = 10.0 / 6.0
+        # time_duration = 10.0 / 6.0
+        time_duration = 10.0
         
     frames = contents["frames"]
     tbar = tqdm(range(len(frames)))
@@ -558,9 +559,15 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
         
         fid = int(frame['file_path'].split('/')[-1][-4:])
         frame_time = frame['time']
+        # if time_duration:
+        #     frame_time /= time_duration
         if time_duration:
-            frame_time /= time_duration
-        
+            if end_frame != -1:
+                frame_time /= (end_frame / 300.0) * 10.0
+                if fid > end_frame:
+                    return None
+            else:
+                frame_time /= time_duration
         cam_name = os.path.join(path, frame["file_path"] + extension)
 
         if dataset_type == 'immersive' or dataset_type == 'technicolor':
@@ -682,11 +689,11 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
 
     return cam_infos
 
-def readMultiViewInfo(path, white_background, eval, extension=".png", load_image_on_the_fly=False, load_mask_on_the_fly=False):
+def readMultiViewInfo(path, white_background, eval, extension=".png", load_image_on_the_fly=False, load_mask_on_the_fly=False, end_frame=None):
     print("Reading Training Transforms")
-    train_cam_infos = readCamerasFromTransforms(path, "transforms_train.json", white_background, extension, load_image_on_the_fly, load_mask_on_the_fly)
+    train_cam_infos = readCamerasFromTransforms(path, "transforms_train.json", white_background, extension, load_image_on_the_fly, load_mask_on_the_fly, end_frame)
     print("Reading Test Transforms")
-    test_cam_infos = readCamerasFromTransforms(path, "transforms_test.json", white_background, extension, load_image_on_the_fly, load_mask_on_the_fly)
+    test_cam_infos = readCamerasFromTransforms(path, "transforms_test.json", white_background, extension, load_image_on_the_fly, load_mask_on_the_fly, end_frame)
     
     if not eval:
         train_cam_infos.extend(test_cam_infos)

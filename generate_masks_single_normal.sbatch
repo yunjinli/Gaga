@@ -5,8 +5,6 @@
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1,VRAM:24G
 #SBATCH --time=24:00:00
-#SBATCH --partition=DEADLINEBIG
-#SBATCH --comment="iccv"
 #SBATCH --output=/usr/stud/lyun/Gaga/log/slurm-%j.out
 #SBATCH --error=/usr/stud/lyun/Gaga/log/slurm-%j.out
 

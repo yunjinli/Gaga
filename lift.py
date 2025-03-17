@@ -79,6 +79,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             viewpoint_stack = scene.getTrainCameras().copy()
         viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
 
+        if dataset.load2gpu_on_the_fly:
+            viewpoint_cam.load2device()
         # Render
         if (iteration - 1) == debug_from:
             pipe.debug = True
@@ -89,7 +91,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         
         time_input = fid.unsqueeze(0).expand(N, -1)
         
-        d_xyz, d_rotation, d_scaling = deform.step(gaussians.get_xyz.detach(), time_input)
+        with torch.no_grad():
+            d_xyz, d_rotation, d_scaling = deform.step(gaussians.get_xyz.detach(), time_input)
         
         render_pkg = render(viewpoint_cam, gaussians, pipe, background, d_xyz=d_xyz, d_rotation=d_rotation, d_scaling=d_scaling)
         image, viewspace_point_tensor, visibility_filter, radii, objects = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"], render_pkg["render_seg"]
@@ -118,6 +121,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         loss_obj = loss_obj / torch.log(torch.tensor(num_classes))  # normalize to (0,1)
 
         loss_obj_3d = None
+        
+        ## for 01_Welder, othereise it needs more than 48 GB VRAM
+        # loss = loss_obj
+        ## for others
         if iteration % opt.reg3d_interval == 0:
             # regularize at certain intervals
             logits3d = classifier(gaussians._objects_dc.permute(2,0,1))
@@ -126,6 +133,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             loss = loss_obj + loss_obj_3d
         else:
             loss = loss_obj
+        
 
         loss.backward()
         iter_end.record()
@@ -168,7 +176,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
-
+        if dataset.load2gpu_on_the_fly:
+            viewpoint_cam.load2device('cpu')
 def prepare_output_and_logger(args):    
     if not args.model_path:
         if os.getenv('OAR_JOB_ID'):
